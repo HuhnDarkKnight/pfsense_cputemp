@@ -1,0 +1,130 @@
+--- etc/inc/rrd.inc     2016-01-12 23:41:44.000000000 +0100
++++ etc/inc/rrd.inc     2016-01-13 03:26:09.000000000 +0100
+@@ -221,6 +221,7 @@
+        $spamd = "-spamd.rrd";
+        $proc = "-processor.rrd";
+        $mem = "-memory.rrd";
++       $coretemp="-coretemp.rrd";
+        $mbuf = "-mbuf.rrd";
+        $cellular = "-cellular.rrd";
+        $vpnusers = "-vpnusers.rrd";
+@@ -251,6 +252,7 @@
+        $rrdlbpoolinterval = 60;
+        $rrdprocinterval = 60;
+        $rrdmeminterval = 60;
++       $rrdcoretempinterval = 60;
+        $rrdmbufinterval = 60;
+        $rrdcellularinterval = 60;
+        $rrdvpninterval = 60;
+@@ -267,6 +269,7 @@
+        $lbpoolvalid = $rrdlbpoolinterval * 2;
+        $procvalid = $rrdlbpoolinterval * 2;
+        $memvalid = $rrdmeminterval * 2;
++       $coretempvalid = $rrdcoretempinterval * 2;
+        $mbufvalid = $rrdmbufinterval * 2;
+        $cellularvalid = $rrdcellularinterval * 2;
+        $vpnvalid = $rrdvpninterval * 2;
+@@ -707,6 +710,47 @@
+
+                /* End Memory statistics */
+
++               /* CPU Temperature */
++               if(! file_exists("$rrddbpath$ifname$coretemp")) {
++                       /* Create a new database if we haven't yet */
++                       $rrdcreate  = "$rrdtool create $rrddbpath$ifname$coretemp --step $rrdcoretempinterval ";
++                       $rrdcreate .= "DS:cpu0temp:GAUGE:$coretempvalid:0:120 ";
++                       $rrdcreate .= "DS:cpu1temp:GAUGE:$coretempvalid:0:120 ";
++                       $rrdcreate .= "DS:cpu2temp:GAUGE:$coretempvalid:0:120 ";
++                       $rrdcreate .= "DS:cpu3temp:GAUGE:$coretempvalid:0:120 ";
++                       /* TODO: add/remove sensor fields to match system sensors ('DS:...') */
++                       $rrdcreate .= "RRA:MIN:0.5:1:1000 ";
++                       $rrdcreate .= "RRA:MIN:0.5:5:1000 ";
++                       $rrdcreate .= "RRA:MIN:0.5:60:1000 ";
++                       $rrdcreate .= "RRA:MIN:0.5:720:3000 ";
++                       $rrdcreate .= "RRA:AVERAGE:0.5:1:1000 ";
++                       $rrdcreate .= "RRA:AVERAGE:0.5:5:1000 ";
++                       $rrdcreate .= "RRA:AVERAGE:0.5:60:1000 ";
++                       $rrdcreate .= "RRA:AVERAGE:0.5:720:3000 ";
++                       $rrdcreate .= "RRA:MAX:0.5:1:1000 ";
++                       $rrdcreate .= "RRA:MAX:0.5:5:1000 ";
++                       $rrdcreate .= "RRA:MAX:0.5:60:1000 ";
++                       $rrdcreate .= "RRA:MAX:0.5:720:3000 ";
++                       $rrdcreate .= "RRA:LAST:0.5:1:1000 ";
++                       $rrdcreate .= "RRA:LAST:0.5:5:1000 ";
++                       $rrdcreate .= "RRA:LAST:0.5:60:1000 ";
++                       $rrdcreate .= "RRA:LAST:0.5:720:3000 ";
++                       create_new_rrd($rrdcreate);
++               }
++               /* Write Undefined into the database on boot to let the graphic program know we rebooted. */
++               if(platform_booting()) {
++                       /* TODO: Change to number of ':U' to number of sensors + 1 */
++                       mwexec("$rrdtool update $rrddbpath$ifname$coretemp N:U:U:U:U:U");
++               }
++               /* Update the values */
++               $rrdupdatesh .= "CPUTEMP=`$sysctl -n dev.cpu.0.temperature dev.cpu.1.temperature dev.cpu.2.temperature dev.cpu.3.temperature | ";
++               /* TODO: add/remove getline in awk to match sensor number. */
++               /* TODO: add/remove lines (c0,...) in awk print to match getline. */
++               $rrdupdatesh .= "awk -F '.' '{getline c0; getline c1; getline c2; getline c3;  print c0 \":\" c1 \":\" c2 \":\" c3 }' | sed 's/C//g' | tee /tmp/temp.log` \n";
++               $rrdupdatesh .= "$rrdtool update $rrddbpath$ifname$coretemp N:\${CPUTEMP} \n";
++               $rrdupdatesh .= "echo $rrdtool update $rrddbpath$ifname$coretemp N:\${CPUTEMP} > /tmp/tempupdate.log \n";
++               /* End CPU Temperature */
++
+                /* mbuf, create mbuf statistics database */
+                if(! file_exists("$rrddbpath$ifname$mbuf")) {
+                        $rrdcreate = "$rrdtool create $rrddbpath$ifname$mbuf --step $rrdmbufinterval ";
+--- usr/local/www/status_rrd_graph_img.php      2016-01-13 00:10:07.000000000 +0100
++++ usr/local/www/status_rrd_graph_img.php      2016-01-13 03:28:23.000000000 +0100
+@@ -942,6 +942,53 @@
+        $graphcmd .= "COMMENT:\"\\n\" ";
+        $graphcmd .= "COMMENT:\"\t\t\t\t\t\t\t\t\t\t\t\t\t" . strftime('%b %d %H\:%M\:%S %Y') . "\" ";
+ }
++elseif((strstr($curdatabase, "-coretemp.rrd")) && (file_exists("$rrddbpath$curdatabase"))) {
++       /* define graphcmd for cpu temperature stats */
++       $graphcmd = "$rrdtool graph $rrdtmppath$curdatabase-$curgraph.png ";
++       $graphcmd .= "--start $start --end $end --step $step ";
++       $graphcmd .= "--vertical-label \"Temperature [C]\" ";
++       $graphcmd .= "--color SHADEA#eeeeee --color SHADEB#eeeeee ";
++       $graphcmd .= "--title \"" . php_uname('n') . " - {$prettydb} - {$hperiod} - {$havg} last\" ";
++       $graphcmd .= "--height 200 --width 620 ";
++       $graphcmd .= "DEF:\"cpu0temp=$rrddbpath$curdatabase:cpu0temp:LAST\" ";
++       $graphcmd .= "DEF:\"cpu1temp=$rrddbpath$curdatabase:cpu1temp:LAST\" ";
++       $graphcmd .= "DEF:\"cpu2temp=$rrddbpath$curdatabase:cpu2temp:LAST\" ";
++       $graphcmd .= "DEF:\"cpu3temp=$rrddbpath$curdatabase:cpu3temp:LAST\" ";
++       /* TODO: add/remove sensors. ('DEF:...') */
++       $graphcmd .= "LINE2:\"cpu0temp#{$colormemory[0]}:cpu0temp\" ";
++       $graphcmd .= "LINE2:\"cpu1temp#{$colormemory[1]}:cpu1temp\" ";
++       $graphcmd .= "LINE2:\"cpu2temp#{$colormemory[2]}:cpu2temp\" ";
++       $graphcmd .= "LINE2:\"cpu3temp#{$colormemory[3]}:cpu3temp\" ";
++       /* TODO: add/remove sensors. ('LINE2:...') */
++       $graphcmd .= "COMMENT:\"\\n\" ";
++       $graphcmd .= "COMMENT:\"\t\t      minimum    average    maximum    current\\n\" ";
++       $graphcmd .= "COMMENT:\"cpu0temp.    \" ";
++       $graphcmd .= "GPRINT:\"cpu0temp:MIN:%7.2lf %s\" ";
++       $graphcmd .= "GPRINT:\"cpu0temp:AVERAGE:%7.2lf %s\" ";
++       $graphcmd .= "GPRINT:\"cpu0temp:MAX:%7.2lf %s\" ";
++       $graphcmd .= "GPRINT:\"cpu0temp:LAST:%7.2lf %S\" ";
++       $graphcmd .= "COMMENT:\"\\n\" ";
++       $graphcmd .= "COMMENT:\"cpu1temp.    \" ";
++       $graphcmd .= "GPRINT:\"cpu1temp:MIN:%7.2lf %s\" ";
++       $graphcmd .= "GPRINT:\"cpu1temp:AVERAGE:%7.2lf %s\" ";
++       $graphcmd .= "GPRINT:\"cpu1temp:MAX:%7.2lf %s\" ";
++       $graphcmd .= "GPRINT:\"cpu1temp:LAST:%7.2lf %S\" ";
++       $graphcmd .= "COMMENT:\"\\n\" ";
++       $graphcmd .= "COMMENT:\"cpu2temp.    \" ";
++       $graphcmd .= "GPRINT:\"cpu2temp:MIN:%7.2lf %s\" ";
++       $graphcmd .= "GPRINT:\"cpu2temp:AVERAGE:%7.2lf %s\" ";
++       $graphcmd .= "GPRINT:\"cpu2temp:MAX:%7.2lf %s\" ";
++       $graphcmd .= "GPRINT:\"cpu2temp:LAST:%7.2lf %S\" ";
++       $graphcmd .= "COMMENT:\"\\n\" ";
++       $graphcmd .= "COMMENT:\"cpu3temp.    \" ";
++       $graphcmd .= "GPRINT:\"cpu3temp:MIN:%7.2lf %s\" ";
++       $graphcmd .= "GPRINT:\"cpu3temp:AVERAGE:%7.2lf %s\" ";
++       $graphcmd .= "GPRINT:\"cpu3temp:MAX:%7.2lf %s\" ";
++       $graphcmd .= "GPRINT:\"cpu3temp:LAST:%7.2lf %S\" ";
++       $graphcmd .= "COMMENT:\"\\n\" ";
++       /* TODO: add/remove sensors. IMPORTANT: Copy/delete all 6 lines ('COMMENT:"cpu..."' to and including 'Comment:" \n"') */
++       $graphcmd .= "COMMENT:\"\t\t\t\t\t\t\t\t\t\t\t\t\t" . strftime('%b %d %H\:%M\:%S %Y') . "\" ";
++}
+ elseif((strstr($curdatabase, "-mbuf.rrd")) && (file_exists("$rrddbpath$curdatabase"))) {
+        /* define graphcmd for mbuf usage stats */
+        $graphcmd = "$rrdtool graph $rrdtmppath$curdatabase-$curgraph.png ";
